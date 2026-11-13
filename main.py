@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""cutest-picture-01 entry: "Two Little Friends" -- a shipped picture.
+"""cutest-picture-01 entry: "Snow Day Sweethearts" -- a shipped picture.
 
-The artwork itself (artwork.png, beside this file) is a soft 3D-style
-rendering of the same two friends, drawn far richer than pixels allow:
-two chubby baby penguins hugging cheek to cheek in fresh snow, the
-bigger one in a tiny red knitted scarf, the smaller one with a pink
-bow, huge sparkling eyes, rosy cheeks, a plump pink heart floating
-over them and a smiling sun in a pastel sky. The competition rules
+The artwork itself (artwork.jpg, beside this file) is a gentle
+watercolor of two tiny friends cuddling cheek to cheek in falling
+snow: a cream kitten in a pink pom-pom hat and a golden puppy in a
+blue one, both with enormous sparkling eyes and rosy blushing cheeks,
+drawn soft and round so the pair still reads at thumbnail size. The competition rules
 explicitly allow this shape of entry -- a repository holding the image
 and a small program that copies it to the output -- so this program's
 whole job is to deliver those exact bytes, safely and deterministically:
@@ -22,7 +21,7 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ARTWORK = os.path.join(HERE, "artwork.png")
+ARTWORK = os.path.join(HERE, "artwork.jpg")
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 JPEG_MAGIC = b"\xff\xd8\xff"
