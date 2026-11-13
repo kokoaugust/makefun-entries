@@ -27,8 +27,8 @@ SIMS = 4000
 HORIZONS = [(6.0, 0.20), (24.0, 0.30), (48.0, 0.30), (72.0, 0.20)]
 TAU_SAT = 30.0          # growth saturation timescale (hours)
 SLOPE_CLAMP = 0.030     # max |log-playing slope| per hour
-SIGMA0 = 0.45           # ranking noise at h=0 (log-playing units; backtest-tuned)
-SIGMA1 = 0.09           # extra noise per sqrt(hour); backtest-tuned
+SIGMA0 = 0.65           # ranking noise at h=0 (log-playing units; backtest-tuned, v2)
+SIGMA1 = 0.13           # extra noise per sqrt(hour); backtest-tuned, v2
 NAMED_CAP = 0.85        # leave 1-NAMED_CAP of each place unnamed; backtest-tuned
 MIN_P = 0.002           # drop named probabilities below this
 
