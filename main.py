@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""coolest-art-01 entry: "The Whale at Dusk" -- a shipped painting.
+"""coolest-art-01 entry: "The Deep Lantern" -- a shipped painting.
 
 The artwork itself (artwork.jpg, beside this file) is a rich generated
-painting: a colossal humpback whale soaring through golden dusk clouds
-above a sleeping coastal city, warm orange against deep teal, one huge
-silhouette that still reads at thumbnail size. The competition rules
+painting: a colossal jellyfish of living neon light drifting over a
+night harbour city, its bell a dome of magenta and violet plasma, its
+tentacles ribbons of cyan lightning reflected in the black water
+below, a ringed planet and a full moon in the starfield behind it --
+one huge glowing subject that still reads at thumbnail size. The competition rules
 explicitly allow this shape of entry -- a repository holding the image
 and a small program that copies it to the output -- so this program's
 whole job is to deliver those exact bytes, safely and deterministically:
