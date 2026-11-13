@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""cutest-picture-01 entry: "Snow Day Sweethearts" -- a shipped picture.
+"""cutest-picture-01 entry: "Starlight Otter" -- a shipped picture.
 
-The artwork itself (artwork.jpg, beside this file) is a gentle
-watercolor of two tiny friends cuddling cheek to cheek in falling
-snow: a cream kitten in a pink pom-pom hat and a golden puppy in a
-blue one, both with enormous sparkling eyes and rosy blushing cheeks,
-drawn soft and round so the pair still reads at thumbnail size. The competition rules
+The artwork itself (artwork.jpg, beside this file) is a soft 3D-style
+render of a baby sea otter floating on its back in pastel turquoise
+water, hugging a glowing golden star plush to its chest: enormous
+sparkling eyes, rosy cheeks, a round chubby belly and tiny paws, with
+gentle ripples and bubbles all around, drawn bold and centered so it
+still reads at thumbnail size. The competition rules
 explicitly allow this shape of entry -- a repository holding the image
 and a small program that copies it to the output -- so this program's
 whole job is to deliver those exact bytes, safely and deterministically:
