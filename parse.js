@@ -1401,6 +1401,57 @@ function processEmphasis(nodes) {
           (o.n + closer.n) % 3 === 0 && !(o.n % 3 === 0 && closer.n % 3 === 0)) {
         continue;
       }
+      // marked deviation: a pure single closer does not partially pair
+      // with a pure double opener when that opener still has a double
+      // closer ahead of it (**text *a*b* stray* more** keeps the stray
+      // star literal inside the strong; **foo* alone still pairs).
+      if (closer.ch !== '~' && closer.n === 1 && o.n === 2 &&
+          !o.canClose && !closer.canOpen) {
+        let hasDoubleCloser = false;
+        for (let m = ci + 1; m < delims.length; m += 1) {
+          const d = delims[m];
+          if (d.ch === closer.ch && d.n >= 2 && d.canClose) {
+            hasDoubleCloser = true;
+            break;
+          }
+        }
+        if (hasDoubleCloser) continue;
+      }
+      // marked deviation: an em pair does not form when its content
+      // holds a same-char strong pair that is preceded by whitespace
+      // and immediately followed by an alphanumeric (*a **b**c* keeps
+      // the outer stars literal, but *a**b**c* and *a **b** c* pair).
+      if (closer.ch !== '~' &&
+          (o.n >= 2 && closer.n >= 2 ? 2 : 1) === 1) {
+        const a = nodes.indexOf(o);
+        const b = nodes.indexOf(closer);
+        let blocked = false;
+        const meaningful = (from, dir) => {
+          for (let m = from; m >= 0 && m < b; m += dir) {
+            const cand = nodes[m];
+            if (cand.t === 'delim' && cand.n === 0) continue;
+            if (cand.t === 'text' && cand.raw === '') continue;
+            return cand;
+          }
+          return undefined;
+        };
+        for (let k = a + 1; k < b && !blocked; k += 1) {
+          const inner = nodes[k];
+          if (inner.t !== 'strong' || inner.ch !== closer.ch) continue;
+          const prev = meaningful(k - 1, -1);
+          const next = meaningful(k + 1, 1);
+          const spaceBefore = prev !== undefined && prev.t === 'text' &&
+            /\s/.test(prev.raw[prev.raw.length - 1]);
+          const first = next === undefined ? undefined
+            : next.t === 'text' ? next.raw[0]
+            : next.t === 'lit' ? next.s : undefined;
+          if (spaceBefore && first !== undefined &&
+              /[A-Za-z0-9]/.test(first)) {
+            blocked = true;
+          }
+        }
+        if (blocked) continue;
+      }
       opener = o; oi = j; break;
     }
     if (!opener) { ci += 1; continue; }
@@ -1414,6 +1465,7 @@ function processEmphasis(nodes) {
     const inner = nodes.splice(a + 1, b - a - 1);
     nodes.splice(a + 1, 0, {
       t: closer.ch === '~' ? 'del' : (use === 2 ? 'strong' : 'em'),
+      ch: closer.ch,
       children: inner,
     });
     // Delimiters between opener and closer can no longer match.
