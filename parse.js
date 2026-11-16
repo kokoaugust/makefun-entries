@@ -1322,11 +1322,29 @@ function trimAutolink(url) {
 
 const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+/;
 
+// An email autolink is rejected when immediately followed by a lone
+// '-' or '_' that stays literal text. A run of 2+ is an emphasis
+// delimiter, and a single '_' with an earlier unmatched '_' opener is
+// an emphasis closer — in both cases the email still links (marked
+// consumes the delimiters before scanning the inner text).
+function emailFollowRejected(text, end, nodes) {
+  const c = text[end];
+  if (c !== '-' && c !== '_') return false;
+  let run = 0;
+  while (text[end + run] === c) run += 1;
+  if (run >= 2) return false;
+  if (c === '_' && nodes &&
+      nodes.some((n) => n.t === 'delim' && n.ch === '_' && n.canOpen)) {
+    return false;
+  }
+  return true;
+}
+
 // Try an extended autolink at text[i]. `prev` is the preceding character
 // (undefined at the start). When `stopBracket` is set (a link/image
 // opener is pending), the candidate may not cross a ']' — marked
 // decides the bracket construct first. Returns { href, text, end }.
-function matchExtendedAutolink(text, i, prev, stopBracket) {
+function matchExtendedAutolink(text, i, prev, stopBracket, nodes) {
   const rest = text.slice(i);
   // www. links
   if (rest.startsWith('www.') &&
@@ -1365,8 +1383,7 @@ function matchExtendedAutolink(text, i, prev, stopBracket) {
     if (em) {
       let cand = scheme[0] + em[0];
       let end = i + cand.length;
-      const after = text[end];
-      if (after === '-' || after === '_') return null;
+      if (emailFollowRejected(text, end, nodes)) return null;
       if (scheme[1] === 'xmpp' && text[end] === '/') {
         const rm = /^\/[A-Za-z0-9@._~-]+/.exec(text.slice(end));
         if (rm) {
@@ -1386,8 +1403,7 @@ function matchExtendedAutolink(text, i, prev, stopBracket) {
     if (/(?:mailto|xmpp):$/.test(text.slice(0, i))) return null;
     const m = EMAIL_RE.exec(rest);
     if (m) {
-      const after = text[i + m[0].length];
-      if (after === '-' || after === '_') return null;
+      if (emailFollowRejected(text, i + m[0].length, nodes)) return null;
       return { href: 'mailto:' + m[0], text: m[0], end: i + m[0].length };
     }
   }
@@ -1787,7 +1803,7 @@ function inlineNodes(text, defs) {
     if (ch === 'w' || ch === 'h' || /[A-Za-z0-9._%+-]/.test(ch)) {
       const prev = i === 0 ? undefined : text[i - 1];
       const auto = matchExtendedAutolink(
-        text, i, prev, openers.some((o) => o.active));
+        text, i, prev, openers.some((o) => o.active), nodes);
       if (auto) {
         flush();
         nodes.push({
