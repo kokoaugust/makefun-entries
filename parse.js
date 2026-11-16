@@ -593,9 +593,11 @@ function takeDef(src0, defs) {
 // Split a table row into cell strings. Pipes escaped as \| or inside code
 // spans do not split. Leading and trailing pipes are dropped.
 function splitTableRow(line) {
-  // Precompute code-span ranges: a backtick run opens a span only when
-  // a later run of exactly the same length closes it; an unmatched run
-  // is literal text and pipes after it still split.
+  // Precompute code-span ranges the way marked's row splitter sees
+  // them: a backtick run opens a span closed by a later run of
+  // exactly the same length; when no such run exists, the run's
+  // last backtick retries as a shorter opener ("``add`" protects
+  // "`add`"). A fully unmatched run is literal; pipes after it split.
   const codeRanges = [];
   {
     let i = 0;
@@ -604,19 +606,22 @@ function splitTableRow(line) {
       if (line[i] !== '`') { i += 1; continue; }
       let n = 0;
       while (line[i + n] === '`') n += 1;
-      let j = i + n;
-      let closeEnd = -1;
-      while (j < line.length) {
-        if (line[j] === '`') {
-          let m = 0;
-          while (line[j + m] === '`') m += 1;
-          if (m === n) { closeEnd = j + m; break; }
-          j += m;
-        } else j += 1;
+      let range = null;
+      for (let off = 0; off < n && !range; off += 1) {
+        const len = n - off;
+        let j = i + n;
+        while (j < line.length) {
+          if (line[j] === '`') {
+            let m = 0;
+            while (line[j + m] === '`') m += 1;
+            if (m === len) { range = [i + off, j + m]; break; }
+            j += m;
+          } else j += 1;
+        }
       }
-      if (closeEnd === -1) { i += n; continue; }
-      codeRanges.push([i, closeEnd]);
-      i = closeEnd;
+      if (!range) { i += n; continue; }
+      codeRanges.push(range);
+      i = range[1];
     }
   }
   const inCode = (pos) => codeRanges.some(([a, b]) => pos >= a && pos < b);
@@ -1456,6 +1461,40 @@ function matchExtendedAutolink(text, i, prev, stopBracket, nodes) {
   return null;
 }
 
+// Whether a link label's backticks are usable by marked's link
+// matcher. Pair the label's backtick runs into code spans (a run
+// closes at the next run of equal length). The label is rejected
+// when a completed span ends before the label does — the matcher
+// then leaves the bracket literal — and when the label's only
+// backtick content is one lone single backtick. Dangling runs like
+// "``url`" are fine: they stay literal inside the link text.
+function labelBackticksBalanced(label) {
+  const runs = [];
+  for (let k = 0; k < label.length; k += 1) {
+    if (label[k] === '\\') { k += 1; continue; }
+    if (label[k] === '`') {
+      let len = 0;
+      while (label[k] === '`') { len += 1; k += 1; }
+      runs.push({ start: k - len, len, end: k });
+      k -= 1;
+    }
+  }
+  if (runs.length === 0) return true;
+  if (runs.length === 1) return runs[0].len !== 1;
+  let idx = 0;
+  while (idx < runs.length) {
+    const open = runs[idx];
+    let close = -1;
+    for (let q = idx + 1; q < runs.length; q += 1) {
+      if (runs[q].len === open.len) { close = q; break; }
+    }
+    if (close === -1) { idx += 1; continue; }
+    if (open.len === 2 && runs[close].end !== label.length) return false;
+    idx = close + 1;
+  }
+  return true;
+}
+
 // --- emphasis -------------------------------------------------------------------
 
 function flanking(text, i, j, ch) {
@@ -1664,6 +1703,22 @@ function inlineNodes(text, defs) {
           j += m;
         } else j += 1;
       }
+      // While a link label is pending, a code span whose closing run
+      // lies past the label's ']' does not form when the label's own
+      // backtick runs pair up: marked decides the link first, and the
+      // backticks stay literal inside the link text.
+      if (closeStart !== -1) {
+        const op = [...openers].reverse().find((o) => o.active);
+        if (op) {
+          const rb = text.indexOf(']', i + n);
+          if (rb !== -1 && closeStart > rb &&
+              labelBackticksBalanced(text.slice(op.bracketStart, rb))) {
+            buf += '`'.repeat(n);
+            i += n;
+            continue;
+          }
+        }
+      }
       if (closeStart === -1) {
         buf += '`'.repeat(n);
         i += n;
@@ -1715,6 +1770,13 @@ function inlineNodes(text, defs) {
       }
       const mIdx = nodes.indexOf(op.marker);
       const textRaw = text.slice(op.bracketStart, i);
+      // A label with an unpaired backtick run cannot form a link.
+      if (!labelBackticksBalanced(textRaw)) {
+        openers.pop();
+        buf += ch;
+        i += 1;
+        continue;
+      }
       let formed = null;
       let consumed = 0;
       // When a complete reference label follows, it alone decides:
