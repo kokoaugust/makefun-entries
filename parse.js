@@ -1372,8 +1372,9 @@ function flanking(text, i, j, ch) {
   const right = !beforeWs && (!beforePunct || afterWs || afterPunct);
   if (ch === '*') return { canOpen: left, canClose: right };
   if (ch === '~') {
-    // GFM strikethrough flanking.
-    return { canOpen: left && !right, canClose: right && !left };
+    // marked pairs a both-flanking ~~ as a closer (e.g. after a code
+    // span, before a colon), so tildes use the plain flanking flags.
+    return { canOpen: left, canClose: right };
   }
   return {
     canOpen: left && (!right || beforePunct),
@@ -1600,6 +1601,14 @@ function inlineNodes(text, defs) {
       // Form the link/image from the nodes after the marker.
       nodes.splice(mIdx, 1);
       const children = nodes.splice(mIdx);
+      // marked does not autolink inside link text: extended autolinks
+      // among the children revert to plain text.
+      for (let k = 0; k < children.length; k += 1) {
+        const c = children[k];
+        if (c.t === 'link' && c.ext) {
+          children[k] = { t: 'text', raw: c.children[0].raw };
+        }
+      }
       processEmphasis(children);
       if (op.image) {
         nodes.push({
@@ -1694,7 +1703,7 @@ function inlineNodes(text, defs) {
       if (auto) {
         flush();
         nodes.push({
-          t: 'link', href: auto.href, title: null,
+          t: 'link', href: auto.href, title: null, ext: true,
           children: [{ t: 'text', raw: auto.text }],
         });
         i = auto.end;
