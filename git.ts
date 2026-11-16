@@ -84,12 +84,13 @@ const TYPE_NUMBERS: Record<ObjType, number> = { commit: 1, tree: 2, blob: 3, tag
 
 /** Inflate one zlib stream starting at `offset`; answers the data and the offset just past it. */
 function inflateAt(buffer: Buffer, offset: number): { data: Buffer; next: number } {
+  // With {info: true} Node answers a {buffer, engine} pair; engine.bytesWritten is the number of
+  // compressed bytes consumed, which is how a pack's next entry is located.
   const result = inflateSync(buffer.subarray(offset), { info: true }) as unknown as {
-    engine?: { bytesWritten?: number };
-    length?: number;
-  } & Buffer;
-  const consumed = (result as unknown as { engine: { bytesWritten: number } }).engine.bytesWritten;
-  return { data: Buffer.from(result), next: offset + consumed };
+    buffer: Buffer;
+    engine: { bytesWritten: number };
+  };
+  return { data: Buffer.from(result.buffer), next: offset + result.engine.bytesWritten };
 }
 
 /**
