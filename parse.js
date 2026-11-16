@@ -321,7 +321,7 @@ function stripFenceIndent(line, cols) {
 }
 
 // Consume a fenced code block starting at src[0]; returns [token, rest].
-function takeFence(src, start, firstLineEnd) {
+function takeFence(src, start, firstLineEnd, inQuote) {
   let i = firstLineEnd + 1;
   const contentLines = [];
   let rest = '';
@@ -333,7 +333,9 @@ function takeFence(src, start, firstLineEnd) {
       rest = src.slice(le);
       break;
     }
-    contentLines.push(stripFenceIndent(line, start.indent));
+    // marked dedents ``` fence content by the opener's indent, but
+    // leaves ~~~ fence content exactly as written.
+    contentLines.push(stripFenceIndent(line, start.ch === '~' ? 0 : start.indent));
     if (le >= src.length) { rest = ''; break; }
     i = le + 1;
   }
@@ -434,7 +436,7 @@ function takeBlockquote(src, defs) {
     // '=' setext underline joins too, but indented four spaces, which
     // keeps it paragraph text (marked's observable behaviour there).
     const lastInner = inner.length > 0 ? inner[inner.length - 1] : '';
-    const probe = tokenizeBlocks(inner.join('\n'), defs);
+    const probe = tokenizeBlocks(inner.join('\n'), defs, undefined, true);
     if (lastInner !== '' && !isBlankLine(lastInner) &&
         endsWithParagraph(probe) && /^ {0,3}=+[ \t]*$/.test(line)) {
       inner.push('    ' + line.replace(/^ {0,3}/, ''));
@@ -460,7 +462,7 @@ function takeBlockquote(src, defs) {
     break;
   }
   if (!sawMarker) return null;
-  const tokens = tokenizeBlocks(inner.join('\n'), defs);
+  const tokens = tokenizeBlocks(inner.join('\n'), defs, undefined, true);
   return [{ type: 'blockquote', tokens }, src.slice(i)];
 }
 
@@ -768,7 +770,7 @@ function fenceTrack(state, line) {
 }
 
 // Consume a list starting at src[0]; returns [token, rest] or null.
-function takeList(src, defs) {
+function takeList(src, defs, inQuote) {
   const firstLine = src.slice(0, lineEnd(src, 0));
   const first = listMarkerAt(firstLine);
   if (!first) return null;
@@ -900,7 +902,7 @@ function takeList(src, defs) {
 
     const content = itemLines.join('\n');
     const itemFlags = { blankBetween: false };
-    const tokens = tokenizeBlocks(content, defs, itemFlags);
+    const tokens = tokenizeBlocks(content, defs, itemFlags, inQuote);
     if (itemFlags.blankBetween) loose = true;
     let task = false;
     let checked = false;
@@ -1009,7 +1011,7 @@ function takeParagraph(src, defs, inItem = false) {
 
 // --- the block loop -----------------------------------------------------------
 
-function tokenizeBlocks(src, defs, flags) {
+function tokenizeBlocks(src, defs, flags, inQuote) {
   const tokens = [];
   let rest = src;
   let pendingBlank = false;
@@ -1037,7 +1039,7 @@ function tokenizeBlocks(src, defs, flags) {
     // Fenced code block.
     const fs = fenceStart(line);
     if (fs) {
-      out = takeFence(rest, fs, le);
+      out = takeFence(rest, fs, le, inQuote);
       push(out[0]); rest = out[1]; continue;
     }
     // ATX heading.
@@ -1060,7 +1062,7 @@ function tokenizeBlocks(src, defs, flags) {
     }
     // List.
     if (listMarkerAt(line)) {
-      out = takeList(rest, defs);
+      out = takeList(rest, defs, inQuote);
       if (out) { push(out[0]); rest = out[1]; continue; }
     }
     // HTML block.
