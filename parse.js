@@ -1367,6 +1367,43 @@ function trimAutolink(url, forHref) {
   return url;
 }
 
+// Trimming for a chained autolink ("URL)](URL)"): like trimAutolink
+// but the chain is never cut at a second scheme, and the ')' of each
+// ")](" joint is structural, so it does not count as an unbalanced
+// closing paren.
+function trimAutolinkChain(url) {
+  let changed = true;
+  while (changed && url.length > 0) {
+    changed = false;
+    const last = url[url.length - 1];
+    if ('?!.,:*_~'.indexOf(last) !== -1) {
+      url = url.slice(0, -1); changed = true; continue;
+    }
+    if (last === ';') {
+      if (/&[A-Za-z0-9]+;$/.test(url)) {
+        url = url.replace(/&[A-Za-z0-9]+;$/, '');
+      } else {
+        url = url.slice(0, -1);
+      }
+      changed = true;
+      continue;
+    }
+    if (last === ')') {
+      let open = 0, close = 0;
+      for (let k = 0; k < url.length; k += 1) {
+        if (url[k] === '(') open += 1;
+        else if (url[k] === ')') {
+          if (url[k + 1] === ']' && url[k + 2] === '(') continue;
+          close += 1;
+        }
+      }
+      if (close > open) { url = url.slice(0, -1); changed = true; }
+      continue;
+    }
+  }
+  return url;
+}
+
 const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+/;
 
 // An email autolink is rejected when immediately followed by a lone
@@ -1391,7 +1428,7 @@ function emailFollowRejected(text, end, nodes) {
 // (undefined at the start). When `stopBracket` is set (a link/image
 // opener is pending), the candidate may not cross a ']' — marked
 // decides the bracket construct first. Returns { href, text, end }.
-function matchExtendedAutolink(text, i, prev, stopBracket, nodes, greedyStart) {
+function matchExtendedAutolink(text, i, prev, stopBracket, nodes) {
   const rest = text.slice(i);
   // www. links
   if (rest.startsWith('www.') &&
@@ -1415,20 +1452,40 @@ function matchExtendedAutolink(text, i, prev, stopBracket, nodes, greedyStart) {
   }
   // scheme links (the scheme matches case-insensitively)
   if (/^https?:\/\//i.test(rest)) {
+    const schemeLen = /^https:/i.test(rest) ? 8 : 7;
+    // A URL in the destination slot of a failed bracket construct
+    // (immediately after "](") is matched the way marked's matcher
+    // sees it: ')' is a path character and a "(...)" group with no
+    // spaces or nested parens is consumed whole; a group that fails
+    // ends the match just before its '('.
+    if (i >= 2 && text[i - 1] === '(' && text[i - 2] === ']') {
+      let j = i;
+      while (j < text.length && !isWs(text[j]) && text[j] !== '<') {
+        if (text[j] === '(') {
+          const close = text.indexOf(')', j);
+          if (close === -1) break;
+          if (/[\s()]/.test(text.slice(j + 1, close))) break;
+          j = close + 1;
+          continue;
+        }
+        j += 1;
+      }
+      const cand = text.slice(i, j);
+      const url = cand.includes(')](')
+        ? trimAutolinkChain(cand)
+        : trimAutolink(cand, false);
+      if (url.length > schemeLen) {
+        return { href: url, text: url, end: i + url.length };
+      }
+      return null;
+    }
     let j = i;
     while (j < text.length && !isWs(text[j]) && text[j] !== '<' &&
            !(stopBracket && text[j] === ']')) j += 1;
     const raw = text.slice(i, j);
-    // A URL in the destination slot of a link whose opener was
-    // deactivated by a nested link (the ']' was swallowed as literal
-    // text just before this "(") autolinks greedily when the run
-    // continues through a further "](...)" tail: the whole chain
-    // "URL)](URL)" becomes one un-trimmed autolink.
-    const greedy = i === greedyStart && raw.includes(')](');
-    const url = greedy ? raw : trimAutolink(raw, false);
-    const schemeLen = /^https:/i.test(rest) ? 8 : 7;
+    const url = trimAutolink(raw, false);
     if (url.length > schemeLen) {
-      return { href: greedy ? raw : trimAutolink(raw, true), text: url, end: i + url.length };
+      return { href: trimAutolink(raw, true), text: url, end: i + url.length };
     }
     return null;
   }
@@ -1644,7 +1701,6 @@ function plainTextOf(nodes) {
 function inlineNodes(text, defs) {
   const nodes = [];
   const openers = []; // { marker, image, bracketStart, active }
-  let greedyAt = -1; // position of a URL in a deactivated link's tail
   let buf = '';
   let i = 0;
 
@@ -1771,7 +1827,6 @@ function inlineNodes(text, defs) {
       const op = openers[s];
       if (!op.active) {
         openers.pop();
-        if (text[i + 1] === '(') greedyAt = i + 2;
         buf += ch;
         i += 1;
         continue;
@@ -1919,7 +1974,7 @@ function inlineNodes(text, defs) {
     if (ch === 'w' || ch === 'h' || /[A-Za-z0-9._%+-]/.test(ch)) {
       const prev = i === 0 ? undefined : text[i - 1];
       const auto = matchExtendedAutolink(
-        text, i, prev, openers.some((o) => o.active), nodes, greedyAt);
+        text, i, prev, openers.some((o) => o.active), nodes);
       if (auto) {
         flush();
         nodes.push({
