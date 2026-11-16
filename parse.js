@@ -695,9 +695,11 @@ function takeTable(src) {
     const line = src.slice(i, le);
     // marked keeps consuming rows until an empty or spaces-only line
     // or a line that starts another block: a tab-only line becomes an
-    // empty row and plain lines become single-cell rows.
+    // empty row and plain lines become single-cell rows. A list-item
+    // line also ends the table.
     if (line === '' || /^ +$/.test(line)) break;
     if (interruptsBlock(line)) break;
+    if (listMarkerAt(line)) break;
     rows.push(splitTableRow(line));
     i = le + 1;
     if (le >= src.length) break;
