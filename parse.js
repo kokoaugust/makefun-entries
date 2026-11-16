@@ -1711,6 +1711,12 @@ function plainTextOf(nodes) {
 
 // --- the inline scanner ---------------------------------------------------------
 
+// Marked tracks one piece of lexer state across a whole document:
+// once a raw "<a " start tag is tokenised inline, extended autolinks
+// (bare URLs, www. links and emails) stop forming until a "</a>"
+// tag token appears. Reset per parse() call.
+let inLink = false;
+
 function inlineNodes(text, defs) {
   const nodes = [];
   const openers = []; // { marker, image, bracketStart, active }
@@ -1945,6 +1951,8 @@ function inlineNodes(text, defs) {
       if (tag) {
         flush();
         nodes.push({ t: 'html', s: tag });
+        if (!inLink && /^<a /i.test(tag)) inLink = true;
+        else if (inLink && /^<\/a>/i.test(tag)) inLink = false;
         i += tag.length;
         continue;
       }
@@ -1986,8 +1994,8 @@ function inlineNodes(text, defs) {
       continue;
     }
 
-    // GFM extended autolinks inside text.
-    if (ch === 'w' || ch === 'h' || /[A-Za-z0-9._%+-]/.test(ch)) {
+    // GFM extended autolinks inside text (suppressed while inLink).
+    if (!inLink && (ch === 'w' || ch === 'h' || /[A-Za-z0-9._%+-]/.test(ch))) {
       const prev = i === 0 ? undefined : text[i - 1];
       const auto = matchExtendedAutolink(
         text, i, prev, openers.some((o) => o.active), nodes);
@@ -2163,6 +2171,7 @@ function renderTokens(tokens, defs) {
 export function parse(markdown) {
   let src = String(markdown);
   src = src.replace(/\r\n?/g, '\n');
+  inLink = false;
   const defs = new Map();
   const tokens = tokenizeBlocks(src, defs);
   return renderTokens(tokens, defs);
