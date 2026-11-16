@@ -231,8 +231,14 @@ function takeHtmlBlock(src, start) {
   if (start.endTag) {
     const idx = src.toLowerCase().indexOf(start.endTag, 2);
     end = idx === -1 ? src.length : lineEnd(src, idx + start.endTag.length);
-    // Tag-terminated blocks keep the terminator line's newline.
-    if (end < src.length && src[end] === '\n') end += 1;
+    // Tag-terminated blocks keep the terminator line's newline, unless
+    // a blank line follows the block.
+    if (end < src.length && src[end] === '\n') {
+      const nle = lineEnd(src, end + 1);
+      if (end + 1 === src.length || !isBlankLine(src.slice(end + 1, nle))) {
+        end += 1;
+      }
+    }
   } else {
     // Through the line before the first blank line.
     end = src.length;
@@ -638,6 +644,13 @@ function takeList(src, defs) {
       const le2 = lineEnd(src, j);
       const line = src.slice(j, le2);
       if (isBlankLine(line)) {
+        // An item that has no content yet and meets a blank line is an
+        // empty item, and it ends the list.
+        if (itemLines.every((l) => l === '')) {
+          itemDone = true;
+          endList = true;
+          break;
+        }
         // Find the next non-blank line.
         let k = le2 + 1;
         let nline = null;
@@ -649,19 +662,18 @@ function takeList(src, defs) {
           break;
         }
         if (nline === null) { j = src.length; itemDone = true; endList = true; break; }
+        if (indentInfo(nline).cols >= contentIndent) {
+          // A blank line inside the item, with more item content after.
+          itemLines.push('');
+          j = le2 + 1;
+          continue;
+        }
         const nm = listMarkerAt(nline);
-        if (nm && nm.indent === first.indent && sameListKind(nm, first)) {
+        if (nm && sameListKind(nm, first)) {
           loose = true;
           nextItem = { offset: k, marker: nm };
           itemDone = true;
           break;
-        }
-        if (indentInfo(nline).cols >= contentIndent) {
-          // A blank line inside the item, with more item content after.
-          loose = true;
-          itemLines.push('');
-          j = le2 + 1;
-          continue;
         }
         // Blank line(s) then unrelated content: the list is over.
         j = k;
@@ -676,14 +688,14 @@ function takeList(src, defs) {
         continue;
       }
       const nm = listMarkerAt(line);
-      if (nm && nm.indent === first.indent && sameListKind(nm, first)) {
+      if (nm && sameListKind(nm, first)) {
         nextItem = { offset: j, marker: nm };
         itemDone = true;
         break;
       }
       // Lazy paragraph continuation inside the item.
       if (itemLines[itemLines.length - 1] !== '' && !interruptsBlock(line) && !nm) {
-        itemLines.push(line.replace(/^ {0,3}/, ''));
+        itemLines.push(line);
         j = le2 + 1;
         continue;
       }
@@ -693,7 +705,9 @@ function takeList(src, defs) {
     }
 
     const content = itemLines.join('\n');
-    const tokens = tokenizeBlocks(content, defs);
+    const itemFlags = { blankBetween: false };
+    const tokens = tokenizeBlocks(content, defs, itemFlags);
+    if (itemFlags.blankBetween) loose = true;
     let task = false;
     let checked = false;
     if (tokens.length > 0 && tokens[0].type === 'paragraph') {
@@ -782,7 +796,7 @@ function takeParagraph(src, defs) {
       }
       if (interruptsParagraph(line)) break;
     }
-    lines.push(stripIndent(line, lines.length === 0 ? 3 : 99));
+    lines.push(line);
     i = le + 1;
     if (le >= src.length) break;
   }
@@ -797,55 +811,65 @@ function mightBeDef(src) {
 
 // --- the block loop -----------------------------------------------------------
 
-function tokenizeBlocks(src, defs) {
+function tokenizeBlocks(src, defs, flags) {
   const tokens = [];
   let rest = src;
+  let pendingBlank = false;
+  const push = (token) => {
+    if (pendingBlank && tokens.length > 0 && flags) flags.blankBetween = true;
+    pendingBlank = false;
+    tokens.push(token);
+  };
   while (rest.length > 0) {
     const le = lineEnd(rest, 0);
     const line = rest.slice(0, le);
-    if (isBlankLine(line)) { rest = rest.slice(le + 1); continue; }
+    if (isBlankLine(line)) {
+      pendingBlank = true;
+      rest = rest.slice(le + 1);
+      continue;
+    }
 
     let out = null;
 
     // Indented code block.
     if (indentInfo(line).cols >= 4) {
       out = takeIndentedCode(rest);
-      if (out) { tokens.push(out[0]); rest = out[1]; continue; }
+      if (out) { push(out[0]); rest = out[1]; continue; }
     }
     // Fenced code block.
     const fs = fenceStart(line);
     if (fs) {
       out = takeFence(rest, fs, le);
-      tokens.push(out[0]); rest = out[1]; continue;
+      push(out[0]); rest = out[1]; continue;
     }
     // ATX heading.
     const atx = atxHeading(line);
     if (atx) {
-      tokens.push({ type: 'heading', depth: atx.depth, text: atx.text });
+      push({ type: 'heading', depth: atx.depth, text: atx.text });
       rest = rest.slice(le + 1);
       continue;
     }
     // Thematic break.
     if (isHrLine(line)) {
-      tokens.push({ type: 'hr' });
+      push({ type: 'hr' });
       rest = rest.slice(le + 1);
       continue;
     }
     // Blockquote.
     if (/^ {0,3}>/.test(line)) {
       out = takeBlockquote(rest, defs);
-      if (out) { tokens.push(out[0]); rest = out[1]; continue; }
+      if (out) { push(out[0]); rest = out[1]; continue; }
     }
     // List.
     if (listMarkerAt(line)) {
       out = takeList(rest, defs);
-      if (out) { tokens.push(out[0]); rest = out[1]; continue; }
+      if (out) { push(out[0]); rest = out[1]; continue; }
     }
     // HTML block.
     const hs = htmlBlockStart(rest, false);
     if (hs) {
       out = takeHtmlBlock(rest, hs);
-      tokens.push(out[0]); rest = out[1]; continue;
+      push(out[0]); rest = out[1]; continue;
     }
     // Link reference definitions (possibly several in a row).
     if (line.replace(/^ {0,3}/, '')[0] === '[') {
@@ -856,10 +880,10 @@ function tokenizeBlocks(src, defs) {
     }
     // Table.
     out = takeTable(rest);
-    if (out) { tokens.push(out[0]); rest = out[1]; continue; }
+    if (out) { push(out[0]); rest = out[1]; continue; }
     // Paragraph / setext heading.
     out = takeParagraph(rest, defs);
-    tokens.push(out[0]);
+    push(out[0]);
     rest = out[1];
   }
   return tokens;
@@ -1243,12 +1267,30 @@ function inlineNodes(text, defs) {
         flush();
         nodes.push({ t: 'br' });
         i += 2;
+        while (text[i] === ' ' || text[i] === '\t') i += 1;
         continue;
       }
       if (next !== undefined && isAsciiPunct(next)) {
         flush();
         nodes.push({ t: 'lit', s: next });
         i += 2;
+        continue;
+      }
+      buf += ch;
+      i += 1;
+      continue;
+    }
+
+    // Hard break: two or more spaces before a line ending.
+    if (ch === '\n') {
+      let spaces = 0;
+      while (buf[buf.length - 1 - spaces] === ' ') spaces += 1;
+      if (spaces >= 2) {
+        buf = buf.slice(0, buf.length - spaces);
+        flush();
+        nodes.push({ t: 'br' });
+        i += 1;
+        while (text[i] === ' ' || text[i] === '\t') i += 1;
         continue;
       }
       buf += ch;
@@ -1486,7 +1528,7 @@ function renderInlineNodes(nodes) {
           .replace(/>/g, '&gt;') + '</code>';
         break;
       case 'html': out += n.s; break;
-      case 'br': out += '<br>\n'; break;
+      case 'br': out += '<br>'; break;
       case 'delim': out += n.ch.repeat(n.n); break;
       case 'lbracket': out += '['; break;
       case 'limage': out += '!['; break;
@@ -1592,7 +1634,6 @@ function renderListItem(item, loose, defs) {
       if (token.type === 'paragraph') body += inlineHtml(token.text, defs);
       else body += renderToken(token, defs);
     }
-    if (body.endsWith('\n')) body = body.slice(0, -1);
   }
   if (item.task) {
     const box = '<input ' + (item.checked ? 'checked="" ' : '') +
