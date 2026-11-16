@@ -324,8 +324,11 @@ function takeFence(src, start, firstLineEnd) {
   const info = start.info.trim();
   const langRaw = info === '' ? '' : info.split(/\s+/)[0];
   const lang = unescapeBackslashes(langRaw);
-  // Code text carries its trailing newline when it has any content.
-  const text = contentLines.length === 0 ? '' : contentLines.join('\n') + '\n';
+  // Code text carries its trailing newline when it has any content;
+  // a content that ends with a blank line loses one newline (marked's
+  // fence capture behaviour).
+  let text = contentLines.length === 0 ? '' : contentLines.join('\n') + '\n';
+  if (text.endsWith('\n\n')) text = text.slice(0, -1);
   return [{ type: 'code', lang, text }, rest];
 }
 
@@ -341,13 +344,13 @@ function takeIndentedCode(src) {
     if (isBlankLine(line)) {
       // Interior blank lines keep whatever indentation passes the
       // four-column strip (trailing ones are cut by lastContent).
-      lines.push(stripIndent(line, 4, 0, true));
+      lines.push(stripIndent(line, 4));
       i = le + 1;
       continue;
     }
     const info = indentInfo(line);
     if (info.cols >= 4) {
-      lines.push(stripIndent(line, 4, 0, true));
+      lines.push(stripIndent(line, 4));
       lastContent = lines.length - 1;
       i = le + 1;
       continue;
@@ -708,6 +711,20 @@ function sameListKind(a, b) {
   return a.bullet === b.bullet;
 }
 
+// Track an open fence inside list item content: while a fence is open,
+// lines belong to the item verbatim (no sibling/lazy/blank logic).
+function fenceTrack(state, line) {
+  if (state === null) {
+    const fs = fenceStart(line);
+    return fs ? { ch: fs.ch, length: fs.length } : null;
+  }
+  const close = /^( {0,3})(`{3,}|~{3,})[ \t]*$/.exec(line);
+  if (close && close[2][0] === state.ch && close[2].length >= state.length) {
+    return null;
+  }
+  return state;
+}
+
 // Consume a list starting at src[0]; returns [token, rest] or null.
 function takeList(src, defs) {
   const firstLine = src.slice(0, lineEnd(src, 0));
@@ -728,6 +745,7 @@ function takeList(src, defs) {
       contentIndent - cur.indent - cur.markerCols,
       cur.indent + cur.markerCols, true);
     const itemLines = [firstContent];
+    let inFence = fenceTrack(null, firstContent);
     let j = le + 1;
     if (le >= src.length) j = src.length;
     let itemDone = false;
@@ -737,6 +755,13 @@ function takeList(src, defs) {
     while (j < src.length && !itemDone) {
       const le2 = lineEnd(src, j);
       const line = src.slice(j, le2);
+      if (inFence) {
+        const stripped = stripIndent(line, contentIndent, 0, true);
+        itemLines.push(stripped);
+        inFence = fenceTrack(inFence, stripped);
+        j = le2 + 1;
+        continue;
+      }
       if (isBlankLine(line)) {
         const blankStart = j;
         // Find the next non-blank line.
@@ -781,7 +806,9 @@ function takeList(src, defs) {
       }
       const ind = indentInfo(line);
       if (ind.cols >= contentIndent) {
-        itemLines.push(stripIndent(line, contentIndent, 0, true));
+        const stripped = stripIndent(line, contentIndent, 0, true);
+        itemLines.push(stripped);
+        inFence = fenceTrack(inFence, stripped);
         j = le2 + 1;
         continue;
       }
@@ -853,8 +880,9 @@ function isSetextUnderline(line) {
 }
 
 // Would `line` interrupt a paragraph? (Setext underlines are handled by
-// the caller before this is consulted.)
-function interruptsParagraph(line) {
+// the caller before this is consulted.) Inside list items, an ordered
+// list with any start number interrupts, as marked does there.
+function interruptsParagraph(line, inItem = false) {
   if (fenceStart(line)) return true;
   if (atxHeading(line)) return true;
   if (isHrLine(line)) return true;
@@ -863,14 +891,14 @@ function interruptsParagraph(line) {
   const lm = listMarkerAt(line);
   if (lm && !lm.empty) {
     if (!lm.ordered) return true;
-    if (lm.ordered && lm.start === 1) return true;
+    if (lm.ordered && (inItem || lm.start === 1)) return true;
   }
   return false;
 }
 
 // Consume a paragraph (or setext heading) starting at src[0].
 // Returns [token, rest].
-function takeParagraph(src, defs) {
+function takeParagraph(src, defs, inItem = false) {
   const lines = [];
   let i = 0;
   while (i < src.length) {
@@ -907,7 +935,7 @@ function takeParagraph(src, defs) {
       // A link reference definition interrupts a paragraph; leave the
       // line for the main loop (which will consume the definition, or
       // start a fresh paragraph with it if it is not one).
-      if (interruptsParagraph(line)) break;
+      if (interruptsParagraph(line, inItem)) break;
     }
     lines.push(line);
     i = le + 1;
@@ -998,7 +1026,7 @@ function tokenizeBlocks(src, defs, flags) {
     out = takeTable(rest);
     if (out) { push(out[0]); rest = out[1]; continue; }
     // Paragraph / setext heading.
-    out = takeParagraph(rest, defs);
+    out = takeParagraph(rest, defs, flags != null);
     push(out[0]);
     rest = out[1];
   }
@@ -1285,12 +1313,12 @@ function matchExtendedAutolink(text, i, prev) {
     }
     return null;
   }
-  // scheme links
-  if (rest.startsWith('http://') || rest.startsWith('https://')) {
+  // scheme links (the scheme matches case-insensitively)
+  if (/^https?:\/\//i.test(rest)) {
     let j = i;
     while (j < text.length && !isWs(text[j]) && text[j] !== '<') j += 1;
     const url = trimAutolink(text.slice(i, j));
-    const schemeLen = rest.startsWith('https://') ? 8 : 7;
+    const schemeLen = /^https:/i.test(rest) ? 8 : 7;
     if (url.length > schemeLen) return { href: url, text: url, end: i + url.length };
     return null;
   }
@@ -1343,6 +1371,10 @@ function flanking(text, i, j, ch) {
   const left = !afterWs && (!afterPunct || beforeWs || beforePunct);
   const right = !beforeWs && (!beforePunct || afterWs || afterPunct);
   if (ch === '*') return { canOpen: left, canClose: right };
+  if (ch === '~') {
+    // GFM strikethrough flanking.
+    return { canOpen: left && !right, canClose: right && !left };
+  }
   return {
     canOpen: left && (!right || beforePunct),
     canClose: right && (!left || afterPunct),
@@ -1362,20 +1394,27 @@ function processEmphasis(nodes) {
     for (let j = ci - 1; j >= 0; j -= 1) {
       const o = delims[j];
       if (o.ch !== closer.ch || !o.canOpen || o.n === 0) continue;
-      if ((closer.canOpen || o.canClose) &&
+      if (closer.ch === '~' && o.n !== closer.n) continue;
+      if (closer.ch !== '~' &&
+          (closer.canOpen || o.canClose) &&
           (o.n + closer.n) % 3 === 0 && !(o.n % 3 === 0 && closer.n % 3 === 0)) {
         continue;
       }
       opener = o; oi = j; break;
     }
     if (!opener) { ci += 1; continue; }
-    const use = opener.n >= 2 && closer.n >= 2 ? 2 : 1;
+    const use = closer.ch === '~'
+      ? opener.n
+      : (opener.n >= 2 && closer.n >= 2 ? 2 : 1);
     opener.n -= use;
     closer.n -= use;
     const a = nodes.indexOf(opener);
     const b = nodes.indexOf(closer);
     const inner = nodes.splice(a + 1, b - a - 1);
-    nodes.splice(a + 1, 0, { t: use === 2 ? 'strong' : 'em', children: inner });
+    nodes.splice(a + 1, 0, {
+      t: closer.ch === '~' ? 'del' : (use === 2 ? 'strong' : 'em'),
+      children: inner,
+    });
     // Delimiters between opener and closer can no longer match.
     delims.splice(oi + 1, ci - oi - 1);
     ci = delims.indexOf(closer);
@@ -1629,34 +1668,22 @@ function inlineNodes(text, defs) {
       continue;
     }
 
-    // Strikethrough.
+    // Strikethrough: tilde runs of one or two become delimiter nodes
+    // (paired by processEmphasis); longer runs are literal text.
     if (ch === '~') {
       let n = 0;
       while (text[i + n] === '~') n += 1;
-      let done = false;
       if (n <= 2) {
-        const after = text[i + n];
-        if (after !== undefined && !isWs(after)) {
-          // Find a closing run of the same length.
-          let j = i + n;
-          while (j < text.length) {
-            const k = text.indexOf('~'.repeat(n), j);
-            if (k === -1) break;
-            // The closing run must be exactly n tildes.
-            if (text[k + n] === '~') { j = k + n; continue; }
-            const content = text.slice(i + n, k);
-            if (content !== '' && !isWs(content[content.length - 1]) &&
-                content.indexOf('\n\n') === -1) {
-              flush();
-              nodes.push({ t: 'del', children: inlineNodes(content, defs) });
-              i = k + n;
-              done = true;
-            }
-            break;
-          }
-        }
+        flush();
+        const f = flanking(text, i, i + n, '~');
+        nodes.push({
+          t: 'delim', ch: '~', n,
+          canOpen: f.canOpen, canClose: f.canClose,
+        });
+      } else {
+        buf += '~'.repeat(n);
       }
-      if (!done) { buf += '~'.repeat(n); i += n; }
+      i += n;
       continue;
     }
 
@@ -1813,7 +1840,12 @@ function renderListItem(item, loose, defs) {
   if (item.task) {
     const box = '<input ' + (item.checked ? 'checked="" ' : '') +
       'disabled="" type="checkbox"> ';
-    body = box + body;
+    // In a loose item the checkbox goes inside the first paragraph.
+    if (loose && body.startsWith('<p>')) {
+      body = '<p>' + box + body.slice(3);
+    } else {
+      body = box + body;
+    }
   }
   return body;
 }
