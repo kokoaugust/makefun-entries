@@ -325,10 +325,14 @@ function takeFence(src, start, firstLineEnd) {
   const langRaw = info === '' ? '' : info.split(/\s+/)[0];
   const lang = unescapeBackslashes(langRaw);
   // Code text carries its trailing newline when it has any content;
-  // a content that ends with a blank line loses one newline (marked's
-  // fence capture behaviour).
+  // when the last content line is blank, one trailing newline is lost
+  // (marked's fence capture behaviour) — a fence holding only a blank
+  // line renders empty.
   let text = contentLines.length === 0 ? '' : contentLines.join('\n') + '\n';
-  if (text.endsWith('\n\n')) text = text.slice(0, -1);
+  if (contentLines[contentLines.length - 1] === '' &&
+      text.endsWith('\n')) {
+    text = text.slice(0, -1);
+  }
   return [{ type: 'code', lang, text }, rest];
 }
 
@@ -569,10 +573,36 @@ function takeDef(src0, defs) {
 // Split a table row into cell strings. Pipes escaped as \| or inside code
 // spans do not split. Leading and trailing pipes are dropped.
 function splitTableRow(line) {
+  // Precompute code-span ranges: a backtick run opens a span only when
+  // a later run of exactly the same length closes it; an unmatched run
+  // is literal text and pipes after it still split.
+  const codeRanges = [];
+  {
+    let i = 0;
+    while (i < line.length) {
+      if (line[i] === '\\') { i += 2; continue; }
+      if (line[i] !== '`') { i += 1; continue; }
+      let n = 0;
+      while (line[i + n] === '`') n += 1;
+      let j = i + n;
+      let closeEnd = -1;
+      while (j < line.length) {
+        if (line[j] === '`') {
+          let m = 0;
+          while (line[j + m] === '`') m += 1;
+          if (m === n) { closeEnd = j + m; break; }
+          j += m;
+        } else j += 1;
+      }
+      if (closeEnd === -1) { i += n; continue; }
+      codeRanges.push([i, closeEnd]);
+      i = closeEnd;
+    }
+  }
+  const inCode = (pos) => codeRanges.some(([a, b]) => pos >= a && pos < b);
   const cells = [];
   let cur = '';
   let i = 0;
-  let codeTicks = 0;
   while (i < line.length) {
     const ch = line[i];
     if (ch === '\\' && i + 1 < line.length) {
@@ -583,16 +613,7 @@ function splitTableRow(line) {
       i += 2;
       continue;
     }
-    if (ch === '`') {
-      let n = 0;
-      while (line[i + n] === '`') n += 1;
-      if (codeTicks === 0) codeTicks = n;
-      else if (n === codeTicks) codeTicks = 0;
-      cur += '`'.repeat(n);
-      i += n;
-      continue;
-    }
-    if (ch === '|' && codeTicks === 0) {
+    if (ch === '|' && !inCode(i)) {
       cells.push(cur);
       cur = '';
       i += 1;
@@ -647,8 +668,11 @@ function takeTable(src) {
   while (i < src.length) {
     const le = lineEnd(src, i);
     const line = src.slice(i, le);
-    if (isBlankLine(line)) break;
-    if (rows.length > 0 && interruptsBlock(line)) break;
+    // marked keeps consuming rows until an empty or spaces-only line
+    // or a line that starts another block: a tab-only line becomes an
+    // empty row and plain lines become single-cell rows.
+    if (line === '' || /^ +$/.test(line)) break;
+    if (interruptsBlock(line)) break;
     rows.push(splitTableRow(line));
     i = le + 1;
     if (le >= src.length) break;
@@ -1264,6 +1288,10 @@ function isPunct(ch) {
 // punctuation is dropped, unbalanced ')' is dropped, and a trailing
 // entity reference's semicolon is dropped.
 function trimAutolink(url) {
+  // An autolink never spans a "](" link-tail junction: it keeps
+  // everything up to and including the ']'.
+  const junction = url.indexOf('](');
+  if (junction !== -1) url = url.slice(0, junction + 1);
   let changed = true;
   while (changed && url.length > 0) {
     changed = false;
@@ -1272,11 +1300,14 @@ function trimAutolink(url) {
       url = url.slice(0, -1); changed = true; continue;
     }
     if (last === ';') {
-      // An entity-like ending is excluded whole, per the GFM rules.
+      // An entity-like ending is excluded whole, per the GFM rules;
+      // a bare trailing semicolon is dropped on its own.
       if (/&[A-Za-z0-9]+;$/.test(url)) {
         url = url.replace(/&[A-Za-z0-9]+;$/, '');
-        changed = true;
+      } else {
+        url = url.slice(0, -1);
       }
+      changed = true;
       continue;
     }
     if (last === ')') {
@@ -1292,8 +1323,10 @@ function trimAutolink(url) {
 const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+/;
 
 // Try an extended autolink at text[i]. `prev` is the preceding character
-// (undefined at the start). Returns { href, text, end } or null.
-function matchExtendedAutolink(text, i, prev) {
+// (undefined at the start). When `stopBracket` is set (a link/image
+// opener is pending), the candidate may not cross a ']' — marked
+// decides the bracket construct first. Returns { href, text, end }.
+function matchExtendedAutolink(text, i, prev, stopBracket) {
   const rest = text.slice(i);
   // www. links
   if (rest.startsWith('www.') &&
@@ -1304,7 +1337,8 @@ function matchExtendedAutolink(text, i, prev) {
       const lastDot = domain.lastIndexOf('.');
       if (lastDot > 0 && domain.length - lastDot - 1 >= 2) {
         let j = i + 4 + domain.length;
-        while (j < text.length && !isWs(text[j]) && text[j] !== '<') j += 1;
+        while (j < text.length && !isWs(text[j]) && text[j] !== '<' &&
+               !(stopBracket && text[j] === ']')) j += 1;
         const url = trimAutolink(text.slice(i, j));
         if (url.length > 4 + lastDot) {
           return { href: 'http://' + url, text: url, end: i + url.length };
@@ -1316,7 +1350,8 @@ function matchExtendedAutolink(text, i, prev) {
   // scheme links (the scheme matches case-insensitively)
   if (/^https?:\/\//i.test(rest)) {
     let j = i;
-    while (j < text.length && !isWs(text[j]) && text[j] !== '<') j += 1;
+    while (j < text.length && !isWs(text[j]) && text[j] !== '<' &&
+           !(stopBracket && text[j] === ']')) j += 1;
     const url = trimAutolink(text.slice(i, j));
     const schemeLen = /^https:/i.test(rest) ? 8 : 7;
     if (url.length > schemeLen) return { href: url, text: url, end: i + url.length };
@@ -1751,7 +1786,8 @@ function inlineNodes(text, defs) {
     // GFM extended autolinks inside text.
     if (ch === 'w' || ch === 'h' || /[A-Za-z0-9._%+-]/.test(ch)) {
       const prev = i === 0 ? undefined : text[i - 1];
-      const auto = matchExtendedAutolink(text, i, prev);
+      const auto = matchExtendedAutolink(
+        text, i, prev, openers.some((o) => o.active));
       if (auto) {
         flush();
         nodes.push({
