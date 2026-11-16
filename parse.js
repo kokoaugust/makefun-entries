@@ -305,6 +305,21 @@ function takeHtmlBlock(src, start) {
   return [{ type: 'html', text }, src.slice(end)];
 }
 
+// Strip a fence's indentation from a content line: up to `cols`
+// whitespace characters, where a tab consumes the whole remaining
+// allowance (marked does not leave a partial-tab remainder here).
+function stripFenceIndent(line, cols) {
+  let i = 0;
+  let allow = cols;
+  while (i < line.length && allow > 0) {
+    const ch = line[i];
+    if (ch === ' ') { allow -= 1; i += 1; }
+    else if (ch === '\t') { allow = 0; i += 1; }
+    else break;
+  }
+  return line.slice(i);
+}
+
 // Consume a fenced code block starting at src[0]; returns [token, rest].
 function takeFence(src, start, firstLineEnd) {
   let i = firstLineEnd + 1;
@@ -318,7 +333,7 @@ function takeFence(src, start, firstLineEnd) {
       rest = src.slice(le);
       break;
     }
-    contentLines.push(stripIndent(line, start.indent));
+    contentLines.push(stripFenceIndent(line, start.indent));
     if (le >= src.length) { rest = ''; break; }
     i = le + 1;
   }
@@ -435,7 +450,9 @@ function takeBlockquote(src, defs) {
       // sentinel already (nested quotes) keeps just the one.
       inner.push(line[0] === '\u0001'
         ? line
-        : '\u0001' + line.replace(/^[ \t]+/, ''));
+        : '\u0001' + (line.startsWith('    ')
+          ? line.replace(/^[ \t]+/, '')
+          : line));
       i = le + 1;
       if (le >= src.length) break;
       continue;
@@ -870,7 +887,9 @@ function takeList(src, defs) {
       if (itemLines[itemLines.length - 1] !== '' && !interruptsBlock(line) && !nm) {
         itemLines.push(line[0] === '\u0001'
           ? line
-          : '\u0001' + line.replace(/^[ \t]+/, ''));
+          : '\u0001' + (line.startsWith('    ')
+            ? line.replace(/^[ \t]+/, '')
+            : line));
         j = le2 + 1;
         continue;
       }
