@@ -1,0 +1,83 @@
+/* Starfall Bastion page shell: a dark starfield backdrop, the canvas centred and scaled
+   to fit the window while keeping its 16:9 arena, and one quiet line of control hints. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: #04060f;
+  color: #8fa3c8;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#stage {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  background:
+    radial-gradient(ellipse 90% 60% at 50% 38%, rgba(38, 64, 160, 0.28), transparent 70%),
+    #04060f;
+}
+
+#game {
+  width: min(1280px, 96vw);
+  height: auto;
+  aspect-ratio: 16 / 9;
+  display: block;
+  background: #070b1d;
+  border: 1px solid #26386b;
+  border-radius: 6px;
+  box-shadow: 0 0 44px rgba(46, 92, 255, 0.25), 0 18px 50px rgba(0, 0, 0, 0.55);
+  cursor: crosshair;
+}
+
+#hint {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+#game:focus-visible {
+  outline: 2px solid #57f7ff;
+  outline-offset: 3px;
+}
+
+/* Screenshot mode (?shot=...): the shell steps aside so the canvas is the whole page,
+   pixel for pixel, and the maker's captures are the game and nothing else. */
+body.shot #stage {
+  padding: 0;
+  gap: 0;
+  justify-content: flex-start;
+}
+
+body.shot #hint {
+  display: none;
+}
+
+body.shot #game {
+  width: 1280px;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+@media (max-height: 760px) {
+  #stage {
+    padding: 8px;
+    gap: 6px;
+  }
+
+  #hint {
+    display: none;
+  }
+}
