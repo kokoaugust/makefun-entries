@@ -188,11 +188,15 @@ const BLOCK_TAGS = new Set((
   'title tr track ul'
 ).split(' '));
 
-// Determine whether an HTML block starts at the beginning of `src`.
-// Returns { endTag } where endTag is the string that terminates the block
-// ('\n\n'-style blank line when endTag is null), or null when no HTML
-// block starts here. `paragraphOpen` suppresses type-7 blocks.
-function htmlBlockStart(src, paragraphOpen) {
+// Determine whether an HTML block starts at the beginning of `src`
+// (after up to three spaces of indentation). Returns { endTag } where
+// endTag is the string that terminates the block (a blank line ends it
+// when endTag is null), or null when no HTML block starts here.
+// `paragraphOpen` suppresses type-7 blocks.
+function htmlBlockStart(src0, paragraphOpen) {
+  let off = 0;
+  while (off < 3 && src0[off] === ' ') off += 1;
+  const src = src0.slice(off);
   if (src[0] !== '<') return null;
   const rest = src.slice(0, 200);
   let m;
@@ -213,39 +217,38 @@ function htmlBlockStart(src, paragraphOpen) {
       BLOCK_TAGS.has(m[1].toLowerCase())) {
     return { endTag: null };
   }
-  // Type 7: any other complete open or closing tag.
-  if (!paragraphOpen &&
-      /^<\/?[a-zA-Z][a-zA-Z0-9-]*(?:[ \t]+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ \t"'=<>`]+|'[^']*'|"[^"]*"))?)*[ \t]*\/?>/.test(rest)) {
-    return { endTag: null };
-  }
+  // marked starts no other HTML blocks: a tag that is not block-level
+  // (CommonMark's type 7) stays inline in a paragraph.
   return null;
 }
 
 // Consume an HTML block starting at src[0]; returns [token, rest].
+// The block's text runs through its last content line; the newline
+// before a following blank line is not part of the text, but a final
+// newline at the very end of the input is kept (marked's behaviour).
 function takeHtmlBlock(src, start) {
   let end;
   if (start.endTag) {
     const idx = src.toLowerCase().indexOf(start.endTag, 2);
-    if (idx === -1) {
-      end = src.length;
-    } else {
-      // Through the end of the line holding the terminator.
-      end = lineEnd(src, idx + start.endTag.length);
-    }
+    end = idx === -1 ? src.length : lineEnd(src, idx + start.endTag.length);
+    // Tag-terminated blocks keep the terminator line's newline.
+    if (end < src.length && src[end] === '\n') end += 1;
   } else {
     // Through the line before the first blank line.
-    end = 0;
+    end = src.length;
     let i = 0;
     while (i < src.length) {
       const le = lineEnd(src, i);
-      if (isBlankLine(src.slice(i, le))) { end = i; break; }
+      if (isBlankLine(src.slice(i, le))) { end = i === 0 ? 0 : i - 1; break; }
       end = le;
       i = le + 1;
-      if (le >= src.length) { end = src.length; break; }
     }
-    if (i >= src.length) end = src.length;
   }
-  const text = src.slice(0, end);
+  let text = src.slice(0, end);
+  if (end < src.length && src[end] === '\n' && end + 1 === src.length) {
+    text += '\n';
+    end += 1;
+  }
   return [{ type: 'html', text }, src.slice(end)];
 }
 
@@ -343,13 +346,13 @@ function takeBlockquote(src, defs) {
     break;
   }
   if (!sawMarker) return null;
-  const tokens = tokenizeBlocks(inner.join('\n') + '\n', defs);
+  const tokens = tokenizeBlocks(inner.join('\n'), defs);
   return [{ type: 'blockquote', tokens }, src.slice(i)];
 }
 
 // --- link reference definitions ---------------------------------------------
 
-const LABEL_RE = /^\[((?:\\.|[^\]\\]|\](?=[^\]]*\]))*)\]/;
+const LABEL_RE = /^\[((?:\\.|[^\[\]\\])*)\]/;
 
 // Try to parse one link reference definition at the start of src.
 // On success registers it in defs and returns the consumed length;
@@ -690,7 +693,7 @@ function takeList(src, defs) {
     }
 
     const content = itemLines.join('\n');
-    const tokens = tokenizeBlocks(content + '\n', defs);
+    const tokens = tokenizeBlocks(content, defs);
     let task = false;
     let checked = false;
     if (tokens.length > 0 && tokens[0].type === 'paragraph') {
@@ -738,7 +741,6 @@ function interruptsParagraph(line) {
   if (atxHeading(line)) return true;
   if (isHrLine(line)) return true;
   if (/^ {0,3}>/.test(line)) return true;
-  if (htmlBlockStart(line, true)) return true;
   const lm = listMarkerAt(line);
   if (lm && !lm.empty) {
     if (!lm.ordered) return true;
@@ -889,9 +891,12 @@ function renderTextRun(raw) {
     }
     if (ch === '<') { out += '&lt;'; i += 1; continue; }
     if (ch === '>') { out += '&gt;'; i += 1; continue; }
+    if (ch === '"') { out += '&quot;'; i += 1; continue; }
+    if (ch === "'") { out += '&#39;'; i += 1; continue; }
     // Consume a plain stretch.
     let j = i + 1;
-    while (j < raw.length && raw[j] !== '&' && raw[j] !== '<' && raw[j] !== '>') j += 1;
+    while (j < raw.length && raw[j] !== '&' && raw[j] !== '<' && raw[j] !== '>' &&
+           raw[j] !== '"' && raw[j] !== "'") j += 1;
     out += raw.slice(i, j);
     i = j;
   }
@@ -902,6 +907,8 @@ function escapeTextChar(ch) {
   if (ch === '&') return '&amp;';
   if (ch === '<') return '&lt;';
   if (ch === '>') return '&gt;';
+  if (ch === '"') return '&quot;';
+  if (ch === "'") return '&#39;';
   return ch;
 }
 
@@ -1297,13 +1304,21 @@ function inlineNodes(text, defs) {
       continue;
     }
 
-    // Closing bracket: try to form a link or image.
+    // Closing bracket: try to form a link or image. The most recent
+    // opener governs: an inactive opener still pairs with this bracket
+    // (and swallows it as literal text) rather than letting an older
+    // opener claim it.
     if (ch === ']') {
       flush();
-      let s = openers.length - 1;
-      while (s >= 0 && !openers[s].active) s -= 1;
-      if (s === -1) { buf += ch; i += 1; continue; }
+      if (openers.length === 0) { buf += ch; i += 1; continue; }
+      const s = openers.length - 1;
       const op = openers[s];
+      if (!op.active) {
+        openers.pop();
+        buf += ch;
+        i += 1;
+        continue;
+      }
       const mIdx = nodes.indexOf(op.marker);
       const textRaw = text.slice(op.bracketStart, i);
       let formed = null;
@@ -1329,8 +1344,7 @@ function inlineNodes(text, defs) {
         if (def) formed = { href: def.href, title: def.title };
       }
       if (!formed) {
-        op.active = false;
-        openers.splice(s, 1);
+        openers.pop();
         buf += ch;
         i += 1;
         continue;
@@ -1353,7 +1367,7 @@ function inlineNodes(text, defs) {
           if (!openers[k].image) openers[k].active = false;
         }
       }
-      openers.splice(s, 1);
+      openers.length = s;
       i += 1 + consumed;
       continue;
     }
@@ -1526,7 +1540,7 @@ function renderToken(token, defs) {
       return '<pre><code' + cls + '>' + body + '</code></pre>\n';
     }
     case 'html':
-      return token.text + '\n';
+      return token.text;
     case 'hr':
       return '<hr>\n';
     case 'blockquote':
@@ -1601,7 +1615,6 @@ function renderTokens(tokens, defs) {
 export function parse(markdown) {
   let src = String(markdown);
   src = src.replace(/\r\n?/g, '\n');
-  if (!src.endsWith('\n')) src += '\n';
   const defs = new Map();
   const tokens = tokenizeBlocks(src, defs);
   return renderTokens(tokens, defs);
