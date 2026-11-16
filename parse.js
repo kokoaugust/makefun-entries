@@ -1651,6 +1651,19 @@ function processEmphasis(nodes) {
         }
         if (blocked) continue;
       }
+      // Inside a link label that marked's matcher rejected over its
+      // backticks, an emphasis pair whose content holds a code span
+      // does not form (the underscores of "_an `` a ` b ``_" inside
+      // the rejected "[cache ...](...)" stay literal).
+      if (closer.ch !== '~' && (o.labelRejected || closer.labelRejected)) {
+        const a = nodes.indexOf(o);
+        const b = nodes.indexOf(closer);
+        let hasCode = false;
+        for (let k = a + 1; k < b; k += 1) {
+          if (nodes[k].t === 'code') { hasCode = true; break; }
+        }
+        if (hasCode) continue;
+      }
       opener = o; oi = j; break;
     }
     if (!opener) { ci += 1; continue; }
@@ -1835,6 +1848,9 @@ function inlineNodes(text, defs) {
       const textRaw = text.slice(op.bracketStart, i);
       // A label with an unpaired backtick run cannot form a link.
       if (!labelBackticksBalanced(textRaw)) {
+        for (let k = mIdx + 1; k < nodes.length; k += 1) {
+          if (nodes[k].t === 'delim') nodes[k].labelRejected = true;
+        }
         openers.pop();
         buf += ch;
         i += 1;
