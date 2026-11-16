@@ -51,7 +51,10 @@ function decodeNumericRef(body) {
   let cp;
   if (body[0] === 'x' || body[0] === 'X') cp = parseInt(body.slice(1), 16);
   else cp = parseInt(body, 10);
-  if (!isFinite(cp) || cp === 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+  // A value above the Unicode range is not a reference at all in
+  // marked's output: the source text stays literal.
+  if (!isFinite(cp) || cp > 0x10FFFF) return null;
+  if (cp === 0 || (cp >= 0xD800 && cp <= 0xDFFF)) {
     return '�';
   }
   if (cp >= 0x80 && cp <= 0x9F && C1_REMAP[cp] !== undefined) cp = C1_REMAP[cp];
@@ -64,8 +67,10 @@ const NUMERIC_REF_RE = /&#(\d+);|&#[xX]([0-9a-fA-F]+);/g;
 // in text but leaves named references untouched).
 function decodeNumericRefs(s) {
   if (s.indexOf('&#') === -1) return s;
-  return s.replace(NUMERIC_REF_RE, (m, dec, hex) =>
-    decodeNumericRef(hex !== undefined ? 'x' + hex : dec));
+  return s.replace(NUMERIC_REF_RE, (m, dec, hex) => {
+    const decoded = decodeNumericRef(hex !== undefined ? 'x' + hex : dec);
+    return decoded === null ? m : decoded;
+  });
 }
 
 const ASCII_PUNCT = '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
@@ -217,8 +222,15 @@ function htmlBlockStart(src0, paragraphOpen) {
       BLOCK_TAGS.has(m[1].toLowerCase())) {
     return { endTag: null };
   }
-  // marked starts no other HTML blocks: a tag that is not block-level
-  // (CommonMark's type 7) stays inline in a paragraph.
+  // Type 7: a line holding exactly one complete tag (any name) and
+  // nothing else. It cannot interrupt a paragraph.
+  if (!paragraphOpen) {
+    const firstLine = src.slice(0, lineEnd(src, 0));
+    const tag = matchHtmlTag(firstLine, 0);
+    if (tag !== null && /^[ \t]*$/.test(firstLine.slice(tag.length))) {
+      return { endTag: null };
+    }
+  }
   return null;
 }
 
@@ -276,7 +288,8 @@ function takeFence(src, start, firstLineEnd) {
     i = le + 1;
   }
   const info = start.info.trim();
-  const lang = info === '' ? '' : info.split(/\s+/)[0];
+  const langRaw = info === '' ? '' : info.split(/\s+/)[0];
+  const lang = unescapeBackslashes(langRaw);
   // Code text carries its trailing newline when it has any content.
   const text = contentLines.length === 0 ? '' : contentLines.join('\n') + '\n';
   return [{ type: 'code', lang, text }, rest];
@@ -292,7 +305,9 @@ function takeIndentedCode(src) {
     const le = lineEnd(src, i);
     const line = src.slice(i, le);
     if (isBlankLine(line)) {
-      lines.push('');
+      // Interior blank lines keep whatever indentation passes the
+      // four-column strip (trailing ones are cut by lastContent).
+      lines.push(stripIndent(line, 4));
       i = le + 1;
       continue;
     }
@@ -360,8 +375,11 @@ function takeBlockquote(src, defs) {
         endsWithParagraph(probe) && !interruptsParagraph(line) &&
         takeDef(line + '\n', new Map()) === 0) {
       // The sentinel marks the line as a forced paragraph continuation
-      // when the quote's content is tokenised.
-      inner.push('\u0001' + line.replace(/^[ \t]+/, ''));
+      // when the quote's content is tokenised. A line arriving with the
+      // sentinel already (nested quotes) keeps just the one.
+      inner.push(line[0] === '\u0001'
+        ? line
+        : '\u0001' + line.replace(/^[ \t]+/, ''));
       i = le + 1;
       if (le >= src.length) break;
       continue;
@@ -679,6 +697,7 @@ function takeList(src, defs) {
           break;
         }
         if (nline === null) { j = src.length; itemDone = true; endList = true; break; }
+        if (isHrLine(nline)) { j = k; itemDone = true; endList = true; break; }
         if (indentInfo(nline).cols >= contentIndent) {
           // A blank line inside the item, with more item content after.
           itemLines.push('');
@@ -704,6 +723,8 @@ function takeList(src, defs) {
         j = le2 + 1;
         continue;
       }
+      // A thematic break ends the list rather than starting an item.
+      if (isHrLine(line)) { itemDone = true; endList = true; break; }
       const nm = listMarkerAt(line);
       if (nm && sameListKind(nm, first)) {
         nextItem = { offset: j, marker: nm };
@@ -772,6 +793,7 @@ function interruptsParagraph(line) {
   if (atxHeading(line)) return true;
   if (isHrLine(line)) return true;
   if (/^ {0,3}>/.test(line)) return true;
+  if (htmlBlockStart(line, true)) return true;
   const lm = listMarkerAt(line);
   if (lm && !lm.empty) {
     if (!lm.ordered) return true;
@@ -931,10 +953,23 @@ function renderTextRun(raw) {
     if (ch === '&') {
       const m = /^&#(\d+);|^&#[xX]([0-9a-fA-F]+);|^&[A-Za-z][A-Za-z0-9]*;/.exec(raw.slice(i));
       if (m) {
-        if (m[1] !== undefined) out += escapeTextChar(decodeNumericRef(m[1]));
-        else if (m[2] !== undefined) out += escapeTextChar(decodeNumericRef('x' + m[2]));
-        else out += m[0];
-        i += m[0].length;
+        const decoded = m[1] !== undefined
+          ? decodeNumericRef(m[1])
+          : (m[2] !== undefined ? decodeNumericRef('x' + m[2]) : undefined);
+        if (decoded !== undefined && decoded !== null) {
+          out += escapeTextChar(decoded);
+          i += m[0].length;
+          continue;
+        }
+        if (decoded === undefined) {
+          // A named reference passes through untouched.
+          out += m[0];
+          i += m[0].length;
+          continue;
+        }
+        // Out-of-range numeric reference: the & is literal.
+        out += '&amp;';
+        i += 1;
         continue;
       }
       out += '&amp;';
@@ -1001,6 +1036,9 @@ const EMAIL_AUTOLINK_RE = /^<([A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[A-Za-z0-9](?:[A
 function matchHtmlTag(src, i) {
   const rest = src.slice(i);
   let m;
+  // Abruptly closed comments are complete comments in marked's output.
+  if (rest.startsWith('<!-->')) return '<!-->';
+  if (rest.startsWith('<!--->')) return '<!--->';
   if ((m = HTML_COMMENT_RE.exec(rest))) return m[0];
   if ((m = PI_RE.exec(rest))) return m[0];
   if ((m = CDATA_RE.exec(rest))) return m[0];
@@ -1120,8 +1158,7 @@ function parseRefLabel(src, i) {
 // --- GFM extended autolinks ---------------------------------------------------
 
 function isWs(ch) {
-  return ch === undefined || ch === ' ' || ch === '\t' || ch === '\n' ||
-    ch === '\r' || ch === '\f' || ch === '\v';
+  return ch === undefined || /\s/.test(ch);
 }
 
 const PUNCT_RE = /[\p{P}\p{S}]/u;
@@ -1553,7 +1590,8 @@ function renderInlineNodes(nodes) {
       case 'lit': out += escapeTextChar(n.s); break;
       case 'code':
         out += '<code>' + n.s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;') + '</code>';
+          .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;') + '</code>';
         break;
       case 'html': out += n.s; break;
       case 'br': out += '<br>'; break;
@@ -1604,9 +1642,12 @@ function renderToken(token, defs) {
       return '<p>' + inlineHtml(token.text, defs) + '</p>\n';
     case 'code': {
       const cls = token.lang
-        ? ' class="language-' + escapeAttr(token.lang) + '"' : '';
+        ? ' class="language-' + escapeAttrPreservingEntities(token.lang) + '"'
+        : '';
+      // marked escapes code text fully: & < > and both quote marks.
       const body = token.text
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       return '<pre><code' + cls + '>' + body + '</code></pre>\n';
     }
     case 'html':
