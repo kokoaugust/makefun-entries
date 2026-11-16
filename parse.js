@@ -1391,7 +1391,7 @@ function emailFollowRejected(text, end, nodes) {
 // (undefined at the start). When `stopBracket` is set (a link/image
 // opener is pending), the candidate may not cross a ']' — marked
 // decides the bracket construct first. Returns { href, text, end }.
-function matchExtendedAutolink(text, i, prev, stopBracket, nodes) {
+function matchExtendedAutolink(text, i, prev, stopBracket, nodes, greedyStart) {
   const rest = text.slice(i);
   // www. links
   if (rest.startsWith('www.') &&
@@ -1419,10 +1419,16 @@ function matchExtendedAutolink(text, i, prev, stopBracket, nodes) {
     while (j < text.length && !isWs(text[j]) && text[j] !== '<' &&
            !(stopBracket && text[j] === ']')) j += 1;
     const raw = text.slice(i, j);
-    const url = trimAutolink(raw, false);
+    // A URL in the destination slot of a link whose opener was
+    // deactivated by a nested link (the ']' was swallowed as literal
+    // text just before this "(") autolinks greedily when the run
+    // continues through a further "](...)" tail: the whole chain
+    // "URL)](URL)" becomes one un-trimmed autolink.
+    const greedy = i === greedyStart && raw.includes(')](');
+    const url = greedy ? raw : trimAutolink(raw, false);
     const schemeLen = /^https:/i.test(rest) ? 8 : 7;
     if (url.length > schemeLen) {
-      return { href: trimAutolink(raw, true), text: url, end: i + url.length };
+      return { href: greedy ? raw : trimAutolink(raw, true), text: url, end: i + url.length };
     }
     return null;
   }
@@ -1638,6 +1644,7 @@ function plainTextOf(nodes) {
 function inlineNodes(text, defs) {
   const nodes = [];
   const openers = []; // { marker, image, bracketStart, active }
+  let greedyAt = -1; // position of a URL in a deactivated link's tail
   let buf = '';
   let i = 0;
 
@@ -1764,6 +1771,7 @@ function inlineNodes(text, defs) {
       const op = openers[s];
       if (!op.active) {
         openers.pop();
+        if (text[i + 1] === '(') greedyAt = i + 2;
         buf += ch;
         i += 1;
         continue;
@@ -1911,7 +1919,7 @@ function inlineNodes(text, defs) {
     if (ch === 'w' || ch === 'h' || /[A-Za-z0-9._%+-]/.test(ch)) {
       const prev = i === 0 ? undefined : text[i - 1];
       const auto = matchExtendedAutolink(
-        text, i, prev, openers.some((o) => o.active), nodes);
+        text, i, prev, openers.some((o) => o.active), nodes, greedyAt);
       if (auto) {
         flush();
         nodes.push({
