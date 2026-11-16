@@ -1,49 +1,90 @@
-// ai-excited-01 entry: "The Smallest Hero" — a caped mouse riding a breaching
-// blue whale toward the full moon. The program validates the image against the
-// gate's limits, then copies it to the output directory as entry.png.
+// "The Smallest Hero" — entry program for ai-excited-01.
 //
-// Run locally:  mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// The artwork (entry.png, sitting next to this file) shows a tiny caped
+// mouse riding a breaching blue whale up toward the full moon. This
+// program is the delivery mechanism: it inspects the image, refuses to
+// ship anything that breaks the competition gate (at most 1 MiB, at most
+// 1024 px on either side, PNG or JPEG only), and then places a copy in
+// the output directory under the required name.
+//
+// Local check:  mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const MAX_BYTES = 1048576; // 1 MiB gate limit
-const MAX_SIDE = 1024;     // gate limit per side
+const BYTE_LIMIT = 1_048_576; // one mebibyte, the gate's size ceiling
+const SIDE_LIMIT = 1024;      // the gate's per-dimension ceiling
 
-const src = new URL('./entry.png', import.meta.url);
-const bytes = readFileSync(src);
+const ownDir = dirname(fileURLToPath(import.meta.url));
+const imagePath = join(ownDir, 'entry.png');
 
-if (bytes.length > MAX_BYTES) {
-  throw new Error(`entry image is ${bytes.length} bytes, over the ${MAX_BYTES} gate limit`);
+// --- dimension readers -------------------------------------------------
+
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+function looksLikePng(buf: Buffer): boolean {
+  return PNG_MAGIC.every((b, idx) => buf[idx] === b);
 }
 
-// Tell PNG from JPEG by the first bytes, as the gate does, and read the size.
-function imageSize(buf) {
-  if (buf[0] === 0x89 && buf[1] === 0x50) { // PNG
-    return { kind: 'png', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-  }
-  if (buf[0] === 0xff && buf[1] === 0xd8) { // JPEG: walk segments to the SOF marker
-    let i = 2;
-    while (i < buf.length - 9) {
-      if (buf[i] !== 0xff) { i++; continue; }
-      const marker = buf[i + 1];
-      if (marker >= 0xc0 && marker <= 0xc3) {
-        return { kind: 'jpeg', width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5) };
-      }
-      i += 2 + buf.readUInt16BE(i + 2);
+// PNG stores width and height as big-endian uint32s inside the IHDR
+// chunk, which always starts right after the 8-byte signature.
+function pngSize(buf: Buffer): { width: number; height: number } {
+  if (buf.length < 24) throw new Error('PNG header is truncated');
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+// JPEG is a chain of marker segments. Walk the chain until a
+// start-of-frame segment turns up; it carries height then width as
+// big-endian uint16s after its length and precision fields.
+function jpegSize(buf: Buffer): { width: number; height: number } {
+  let pos = 2; // skip the SOI marker (FF D8)
+  while (pos + 4 <= buf.length) {
+    if (buf[pos] !== 0xff) throw new Error(`JPEG segment out of sync at byte ${pos}`);
+    const marker = buf[pos + 1];
+    const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isSof) {
+      return { height: buf.readUInt16BE(pos + 5), width: buf.readUInt16BE(pos + 7) };
     }
+    const segLen = buf.readUInt16BE(pos + 2);
+    if (segLen < 2) throw new Error('JPEG segment has an impossible length');
+    pos += 2 + segLen;
   }
-  throw new Error('entry image is neither PNG nor JPEG');
+  throw new Error('no start-of-frame segment found in JPEG');
 }
 
-const info = imageSize(bytes);
-if (info.width > MAX_SIDE || info.height > MAX_SIDE) {
-  throw new Error(`entry image is ${info.width}x${info.height}, over the ${MAX_SIDE} gate limit`);
+type ImageInfo = { format: 'png' | 'jpeg'; width: number; height: number };
+
+function inspect(buf: Buffer): ImageInfo {
+  if (looksLikePng(buf)) return { format: 'png', ...pngSize(buf) };
+  if (buf[0] === 0xff && buf[1] === 0xd8) return { format: 'jpeg', ...jpegSize(buf) };
+  throw new Error('entry.png is neither a PNG nor a JPEG image');
 }
 
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-mkdirSync(outDir, { recursive: true });
-const dest = join(outDir, 'entry.png');
-writeFileSync(dest, bytes);
-console.log(`wrote ${dest}: ${info.kind} ${info.width}x${info.height}, ${bytes.length} bytes`);
+function checkAgainstGate(buf: Buffer): ImageInfo {
+  if (buf.length > BYTE_LIMIT) {
+    throw new Error(`entry.png weighs ${buf.length} bytes; the gate allows ${BYTE_LIMIT}`);
+  }
+  const info = inspect(buf);
+  if (info.width > SIDE_LIMIT || info.height > SIDE_LIMIT) {
+    throw new Error(`entry.png measures ${info.width}x${info.height}; the gate allows ${SIDE_LIMIT} per side`);
+  }
+  return info;
+}
+
+// --- main flow ---------------------------------------------------------
+
+const imageBytes = readFileSync(imagePath);
+const info = checkAgainstGate(imageBytes);
+
+const targetDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+mkdirSync(targetDir, { recursive: true });
+
+const targetPath = join(targetDir, 'entry.png');
+copyFileSync(imagePath, targetPath);
+
+console.log(
+  `The Smallest Hero delivered: ${targetPath} ` +
+  `(${info.format}, ${info.width}x${info.height}, ${imageBytes.length} bytes)`,
+);
 
