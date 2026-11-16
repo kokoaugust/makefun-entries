@@ -770,7 +770,16 @@ function takeList(src, defs) {
       contentIndent - cur.indent - cur.markerCols,
       cur.indent + cur.markerCols, true);
     const itemLines = [firstContent];
-    let inFence = fenceTrack(null, firstContent);
+    let fenceLineCount = 0;
+    const trackFence = (line) => {
+      const prev = inFence;
+      const next = fenceTrack(prev, line);
+      if (prev && next) fenceLineCount += 1;
+      else fenceLineCount = 0;
+      inFence = next;
+    };
+    let inFence = null;
+    trackFence(firstContent);
     let j = le + 1;
     if (le >= src.length) j = src.length;
     let itemDone = false;
@@ -781,9 +790,19 @@ function takeList(src, defs) {
       const le2 = lineEnd(src, j);
       const line = src.slice(j, le2);
       if (inFence) {
+        // While a fence inside the item still has no content lines,
+        // a non-blank line indented less than the content indent ends
+        // the item: the fence is left unclosed and empty. Once the
+        // fence has content, dedented lines belong to it.
+        if (!isBlankLine(line) && indentInfo(line).cols < contentIndent &&
+            fenceLineCount === 0) {
+          itemDone = true;
+          endList = true;
+          break;
+        }
         const stripped = stripIndent(line, contentIndent, 0, true);
         itemLines.push(stripped);
-        inFence = fenceTrack(inFence, stripped);
+        trackFence(stripped);
         j = le2 + 1;
         continue;
       }
@@ -833,7 +852,7 @@ function takeList(src, defs) {
       if (ind.cols >= contentIndent) {
         const stripped = stripIndent(line, contentIndent, 0, true);
         itemLines.push(stripped);
-        inFence = fenceTrack(inFence, stripped);
+        trackFence(stripped);
         j = le2 + 1;
         continue;
       }
