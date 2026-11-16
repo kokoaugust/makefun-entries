@@ -263,24 +263,23 @@ function takeFence(src, start, firstLineEnd) {
   let i = firstLineEnd + 1;
   const contentLines = [];
   let rest = '';
-  let closed = false;
-  while (i <= src.length) {
+  while (i < src.length) {
     const le = lineEnd(src, i);
     const line = src.slice(i, le);
     const close = /^( {0,3})(`{3,}|~{3,})[ \t]*$/.exec(line);
     if (close && close[2][0] === start.ch && close[2].length >= start.length) {
       rest = src.slice(le);
-      closed = true;
       break;
     }
     contentLines.push(stripIndent(line, start.indent));
     if (le >= src.length) { rest = ''; break; }
     i = le + 1;
   }
-  if (!closed && rest === '' && i > src.length) rest = '';
   const info = start.info.trim();
   const lang = info === '' ? '' : info.split(/\s+/)[0];
-  return [{ type: 'code', lang, text: contentLines.join('\n') }, rest];
+  // Code text carries its trailing newline when it has any content.
+  const text = contentLines.length === 0 ? '' : contentLines.join('\n') + '\n';
+  return [{ type: 'code', lang, text }, rest];
 }
 
 // Consume an indented code block starting at src[0]; returns [token, rest]
@@ -308,10 +307,25 @@ function takeIndentedCode(src) {
   }
   if (lastContent === -1) return null;
   const kept = lines.slice(0, lastContent + 1);
-  return [{ type: 'code', lang: '', text: kept.join('\n') }, src.slice(i)];
+  return [{ type: 'code', lang: '', text: kept.join('\n') + '\n' }, src.slice(i)];
+}
+
+// Does a token list end with an open paragraph (looking through nested
+// blockquotes and list items)?
+function endsWithParagraph(tokens) {
+  if (tokens.length === 0) return false;
+  const last = tokens[tokens.length - 1];
+  if (last.type === 'paragraph') return true;
+  if (last.type === 'blockquote') return endsWithParagraph(last.tokens);
+  if (last.type === 'list' && last.items.length > 0) {
+    return endsWithParagraph(last.items[last.items.length - 1].tokens);
+  }
+  return false;
 }
 
 // Consume a blockquote starting at src[0]; returns [token, rest] or null.
+// A blank line without a marker ends the quote; a line without a marker
+// joins lazily only when it continues an open paragraph inside.
 function takeBlockquote(src, defs) {
   const inner = [];
   let i = 0;
@@ -328,23 +342,26 @@ function takeBlockquote(src, defs) {
       continue;
     }
     if (!sawMarker) return null;
-    if (isBlankLine(line)) {
-      // The quote continues only if a later non-blank line has a marker.
-      let j = le + 1;
-      let cont = false;
-      while (j < src.length) {
-        const le2 = lineEnd(src, j);
-        const l2 = src.slice(j, le2);
-        if (isBlankLine(l2)) { j = le2 + 1; continue; }
-        cont = /^ {0,3}>/.test(l2);
-        break;
-      }
-      if (cont) { inner.push(''); i = le + 1; continue; }
-      break;
+    if (isBlankLine(line)) break;
+    // Lazy continuation: only into an open paragraph whose last line is
+    // not blank, and only a line that would continue that paragraph. An
+    // '=' setext underline joins too, but indented four spaces, which
+    // keeps it paragraph text (marked's observable behaviour there).
+    const lastInner = inner.length > 0 ? inner[inner.length - 1] : '';
+    const probe = tokenizeBlocks(inner.join('\n'), defs);
+    if (lastInner !== '' && !isBlankLine(lastInner) &&
+        endsWithParagraph(probe) && /^ {0,3}=+[ \t]*$/.test(line)) {
+      inner.push('    ' + line.replace(/^ {0,3}/, ''));
+      i = le + 1;
+      if (le >= src.length) break;
+      continue;
     }
-    // Lazy continuation line: part of an open paragraph inside the quote.
-    if (inner.length > 0 && inner[inner.length - 1] !== '') {
-      inner.push(line);
+    if (lastInner !== '' && !isBlankLine(lastInner) &&
+        endsWithParagraph(probe) && !interruptsParagraph(line) &&
+        takeDef(line + '\n', new Map()) === 0) {
+      // The sentinel marks the line as a forced paragraph continuation
+      // when the quote's content is tokenised.
+      inner.push('\u0001' + line.replace(/^[ \t]+/, ''));
       i = le + 1;
       if (le >= src.length) break;
       continue;
@@ -772,10 +789,21 @@ function takeParagraph(src, defs) {
     const le = lineEnd(src, i);
     const line = src.slice(i, le);
     if (lines.length > 0) {
-      if (isBlankLine(line)) break;
+      // A blockquote lazy line (sentinel-prefixed) always continues.
+      if (line[0] === '\u0001') {
+        lines.push(line.slice(1));
+        i = le + 1;
+        if (le >= src.length) break;
+        continue;
+      }
+      // A blank line ends the paragraph, except that a final
+      // whitespace-only line with no trailing newline is absorbed
+      // (it is the paragraph's last line in marked's capture).
+      if (line === '') break;
+      if (isBlankLine(line) && le < src.length) break;
       if (isSetextUnderline(line)) {
         const depth = line.trimStart()[0] === '=' ? 1 : 2;
-        const text = lines.join('\n');
+        const text = lines.join('\n').trim();
         let rest = src.slice(le);
         if (rest[0] === '\n') rest = rest.slice(1);
         return [{ type: 'heading', depth, text }, rest];
@@ -1577,7 +1605,7 @@ function renderToken(token, defs) {
     case 'code': {
       const cls = token.lang
         ? ' class="language-' + escapeAttr(token.lang) + '"' : '';
-      const body = (token.text + '\n')
+      const body = token.text
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       return '<pre><code' + cls + '>' + body + '</code></pre>\n';
     }
