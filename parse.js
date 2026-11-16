@@ -1288,10 +1288,11 @@ function isPunct(ch) {
 // punctuation is dropped, unbalanced ')' is dropped, and a trailing
 // entity reference's semicolon is dropped.
 function trimAutolink(url) {
-  // An autolink never spans a "](" link-tail junction: it keeps
-  // everything up to and including the ']'.
-  const junction = url.indexOf('](');
-  if (junction !== -1) url = url.slice(0, junction + 1);
+  // An autolink never spans into a second scheme introduced by '(':
+  // it keeps everything before that '(' (a failed link tail followed
+  // by another URL renders as two separate autolinks).
+  const second = /\(https?:\/\//i.exec(url.slice(6));
+  if (second) url = url.slice(0, second.index + 6);
   let changed = true;
   while (changed && url.length > 0) {
     changed = false;
