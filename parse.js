@@ -278,10 +278,11 @@ function takeHtmlBlock(src, start) {
     const idx = src.toLowerCase().indexOf(start.endTag, 2);
     end = idx === -1 ? src.length : lineEnd(src, idx + start.endTag.length);
     // Tag-terminated blocks keep the terminator line's newline, unless
-    // a blank line follows the block.
+    // a completely empty line follows the block (a whitespace-only
+    // line does not suppress it).
     if (end < src.length && src[end] === '\n') {
       const nle = lineEnd(src, end + 1);
-      if (end + 1 === src.length || !isBlankLine(src.slice(end + 1, nle))) {
+      if (end + 1 === src.length || src.slice(end + 1, nle) !== '') {
         end += 1;
       }
     }
@@ -1287,7 +1288,7 @@ function isPunct(ch) {
 // Trim an extended-autolink candidate per the GFM rules: trailing
 // punctuation is dropped, unbalanced ')' is dropped, and a trailing
 // entity reference's semicolon is dropped.
-function trimAutolink(url) {
+function trimAutolink(url, forHref) {
   // An autolink never spans into a second scheme introduced by '(':
   // it keeps everything before that '(' (a failed link tail followed
   // by another URL renders as two separate autolinks).
@@ -1358,9 +1359,10 @@ function matchExtendedAutolink(text, i, prev, stopBracket, nodes) {
         let j = i + 4 + domain.length;
         while (j < text.length && !isWs(text[j]) && text[j] !== '<' &&
                !(stopBracket && text[j] === ']')) j += 1;
-        const url = trimAutolink(text.slice(i, j));
+        const raw = text.slice(i, j);
+        const url = trimAutolink(raw, false);
         if (url.length > 4 + lastDot) {
-          return { href: 'http://' + url, text: url, end: i + url.length };
+          return { href: 'http://' + trimAutolink(raw, true), text: url, end: i + url.length };
         }
       }
     }
@@ -1371,9 +1373,12 @@ function matchExtendedAutolink(text, i, prev, stopBracket, nodes) {
     let j = i;
     while (j < text.length && !isWs(text[j]) && text[j] !== '<' &&
            !(stopBracket && text[j] === ']')) j += 1;
-    const url = trimAutolink(text.slice(i, j));
+    const raw = text.slice(i, j);
+    const url = trimAutolink(raw, false);
     const schemeLen = /^https:/i.test(rest) ? 8 : 7;
-    if (url.length > schemeLen) return { href: url, text: url, end: i + url.length };
+    if (url.length > schemeLen) {
+      return { href: trimAutolink(raw, true), text: url, end: i + url.length };
+    }
     return null;
   }
   // mailto: / xmpp: autolinks: the scheme is part of the link.
@@ -1388,7 +1393,7 @@ function matchExtendedAutolink(text, i, prev, stopBracket, nodes) {
       if (scheme[1] === 'xmpp' && text[end] === '/') {
         const rm = /^\/[A-Za-z0-9@._~-]+/.exec(text.slice(end));
         if (rm) {
-          const resource = trimAutolink(rm[0]);
+          const resource = trimAutolink(rm[0], true);
           cand += resource;
           end += resource.length;
         }
